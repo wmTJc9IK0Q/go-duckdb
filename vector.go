@@ -97,6 +97,8 @@ func (vec *vector) init(logicalType mapping.LogicalType, colIdx int) error {
 		return vec.initMap(logicalType, colIdx)
 	case TYPE_ARRAY:
 		return vec.initArray(logicalType, colIdx)
+	case TYPE_UNION:
+		return vec.initUnion(logicalType, colIdx)
 	case TYPE_UUID:
 		vec.initUUID()
 	case TYPE_SQLNULL:
@@ -135,7 +137,7 @@ func (vec *vector) getChildVectors(v mapping.Vector, writable bool) {
 	case TYPE_LIST, TYPE_MAP:
 		child := mapping.ListVectorGetChild(v)
 		vec.childVectors[0].initVectors(child, writable)
-	case TYPE_STRUCT:
+	case TYPE_STRUCT, TYPE_UNION:
 		for i := 0; i < len(vec.childVectors); i++ {
 			child := mapping.StructVectorGetChild(v, mapping.IdxT(i))
 			vec.childVectors[i].initVectors(child, writable)
@@ -533,4 +535,68 @@ func (vec *vector) initSQLNull() {
 		return errSetSQLNULLValue
 	}
 	vec.Type = TYPE_SQLNULL
+}
+
+func (vec *vector) initUnion(logicalType mapping.LogicalType, colIdx int) error {
+	// A UNION type in DuckDB is implemented as a STRUCT with:
+	// 1. First entry (index 0): tag as int8 indicating which member is active
+	// 2. Additional entries: one for each union member
+
+	memberCount := mapping.UnionTypeMemberCount(logicalType)
+	var structEntries []StructEntry
+
+	// Store the member names for tag lookup
+	for i := mapping.IdxT(0); i < memberCount; i++ {
+		name := mapping.UnionTypeMemberName(logicalType, i)
+		entry, err := NewStructEntry(nil, name)
+		if err != nil {
+			return err
+		}
+		structEntries = append(structEntries, entry)
+	}
+
+	// We need child vectors for the tag (index 0) + all member types
+	// So the total is memberCount + 1
+	vec.childVectors = make([]vector, memberCount+1)
+	vec.structEntries = structEntries
+
+	// When the vectors are initialized by getChildVectors:
+	// childVectors[0] = tag vector (int8)
+	// childVectors[1...n] = member vectors (one per union member)
+
+	// Init the tag childVector
+	vec.childVectors[0].init(mapping.CreateLogicalType(mapping.TypeUTinyInt), colIdx)
+
+	// Initialize the member type vectors
+	for i := mapping.IdxT(0); i < memberCount; i++ {
+		memberType := mapping.UnionTypeMemberType(logicalType, i)
+		// The actual index in childVectors is i+1 because index 0 is reserved for the tag
+		err := vec.childVectors[i+1].init(memberType, colIdx)
+		mapping.DestroyLogicalType(&memberType)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Initialize the tag vector (index 0) as an int8 to store the active member index
+	// We don't need to explicitly initialize it because DuckDB handles this internally
+	// The appropriate tag value will be set when we call setUnion
+
+	vec.getFn = func(vec *vector, rowIdx mapping.IdxT) any {
+		if vec.getNull(rowIdx) {
+			return nil
+		}
+		return vec.getUnion(rowIdx)
+	}
+
+	vec.setFn = func(vec *vector, rowIdx mapping.IdxT, val any) error {
+		if val == nil {
+			vec.setNull(rowIdx)
+			return nil
+		}
+		return setUnion(vec, rowIdx, val)
+	}
+
+	vec.Type = TYPE_UNION
+	return nil
 }

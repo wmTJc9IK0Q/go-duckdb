@@ -54,7 +54,7 @@ func getTypeInfos(t *testing.T, useAny bool) []testTypeInfo {
 			continue
 		}
 		switch k {
-		case TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY, TYPE_SQLNULL:
+		case TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY, TYPE_SQLNULL, TYPE_UNION:
 			continue
 		}
 		primitiveTypes = append(primitiveTypes, k)
@@ -201,7 +201,7 @@ func TestTypeInterface(t *testing.T) {
 
 func TestErrTypeInfo(t *testing.T) {
 	var incorrectTypes []Type
-	incorrectTypes = append(incorrectTypes, TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY)
+	incorrectTypes = append(incorrectTypes, TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY, TYPE_UNION)
 
 	for _, incorrect := range incorrectTypes {
 		_, err := NewTypeInfo(incorrect)

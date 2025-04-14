@@ -190,6 +190,39 @@ func (vec *vector) getArray(rowIdx mapping.IdxT) []any {
 	return vec.getSliceChild(uint64(rowIdx)*length, length)
 }
 
+func (vec *vector) getUnion(rowIdx mapping.IdxT) Union[any] {
+	// For Union types, the tag is stored as the first entry (index 0)
+	tagVec := mapping.StructVectorGetChild(vec.vec, 0)
+	tagData := (*[1 << 31]int8)(mapping.VectorGetData(tagVec))
+	tagIdx := int(tagData[rowIdx])
+
+	// Make sure the tag index is within bounds
+	if tagIdx < 0 || tagIdx >= len(vec.structEntries) {
+		// If out of bounds, return empty union
+		// return nil
+	}
+
+	// Get the tag name
+	// tag := vec.structEntries[tagIdx].Name()
+
+	// Get the value from the child vector corresponding to the tag
+	// The child vectors start at index 1 (one vector per union member)
+	// Child at index (tagIdx+1) holds the value for the active alternative
+	childVecIdx := tagIdx + 1
+	if childVecIdx >= len(vec.childVectors) {
+		// return nil
+	}
+
+	value := vec.childVectors[childVecIdx].getFn(&vec.childVectors[childVecIdx], rowIdx)
+	name := vec.structEntries[tagIdx].Name()
+
+	// Return a Union with the tag and value
+	return Union[any]{
+		MemberName:  name,
+		MemberValue: value,
+	}
+}
+
 func (vec *vector) getSliceChild(offset uint64, length uint64) []any {
 	slice := make([]any, 0, length)
 	child := &vec.childVectors[0]

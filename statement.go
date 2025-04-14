@@ -256,7 +256,12 @@ func (s *Stmt) bindComplexValue(val driver.NamedValue, n int) (mapping.State, er
 
 		state := mapping.BindValue(*s.preparedStmt, mapping.IdxT(n+1), *mappedVal)
 		return state, nil
-	case TYPE_TIMESTAMP_S, TYPE_TIMESTAMP_MS, TYPE_TIMESTAMP_NS, TYPE_MAP, TYPE_ENUM, TYPE_UNION:
+	case TYPE_UNION:
+		switch u := val.Value.(type) {
+		case Union[any]:
+			return s.bindValue(driver.NamedValue{Name: val.Name, Ordinal: val.Ordinal, Value: u.MemberValue}, n)
+		}
+	case TYPE_TIMESTAMP_S, TYPE_TIMESTAMP_MS, TYPE_TIMESTAMP_NS, TYPE_MAP, TYPE_ENUM:
 		// FIXME: for timestamps: distinguish between timestamp[_s|ms|ns] once available.
 		// FIXME: for other types: duckdb_param_logical_type once available, then create duckdb_value + duckdb_bind_value
 		// FIXME: for other types: implement NamedValueChecker to support custom data types.

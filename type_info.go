@@ -95,7 +95,7 @@ func NewTypeInfo(t Type) (TypeInfo, error) {
 		return nil, getError(errAPI, tryOtherFuncError(funcName(NewEnumInfo)))
 	case TYPE_LIST:
 		return nil, getError(errAPI, tryOtherFuncError(funcName(NewListInfo)))
-	case TYPE_STRUCT:
+	case TYPE_STRUCT, TYPE_UNION:
 		return nil, getError(errAPI, tryOtherFuncError(funcName(NewStructInfo)))
 	case TYPE_MAP:
 		return nil, getError(errAPI, tryOtherFuncError(funcName(NewMapInfo)))
@@ -250,6 +250,77 @@ func NewArrayInfo(childInfo TypeInfo, size uint64) (TypeInfo, error) {
 	return info, nil
 }
 
+// UnionMember represents a member of a UNION type.
+type UnionMember struct {
+	TypeInfo
+	name string
+}
+
+// Name returns the union member's name.
+func (member *UnionMember) Name() string {
+	return member.name
+}
+
+// NewUnionMember creates a new member for a UNION type.
+func NewUnionMember(info TypeInfo, name string) (*UnionMember, error) {
+	if info == nil {
+		return nil, getError(errAPI, interfaceIsNilError("info"))
+	}
+	if name == "" {
+		return nil, getError(errAPI, errEmptyName)
+	}
+	return &UnionMember{TypeInfo: info, name: name}, nil
+}
+
+// NewUnionInfo returns UNION type information.
+// Its input parameters are the UNION members.
+func NewUnionInfo(firstMember *UnionMember, others ...*UnionMember) (TypeInfo, error) {
+	if firstMember == nil {
+		return nil, getError(errAPI, interfaceIsNilError("firstMember"))
+	}
+
+	// Check for duplicate names.
+	m := map[string]bool{}
+	m[firstMember.Name()] = true
+	for i, member := range others {
+		if member == nil {
+			return nil, getError(errAPI, addIndexToError(interfaceIsNilError("member"), i))
+		}
+		name := member.Name()
+		_, inMap := m[name]
+		if inMap {
+			return nil, getError(errAPI, duplicateNameError(name))
+		}
+		m[name] = true
+	}
+
+	info := &typeInfo{
+		baseTypeInfo: baseTypeInfo{
+			Type:          TYPE_UNION,
+			structEntries: make([]StructEntry, 0),
+		},
+		childTypes: make([]TypeInfo, 0),
+	}
+
+	// Add the first member
+	info.childTypes = append(info.childTypes, firstMember.TypeInfo)
+	info.structEntries = append(info.structEntries, &structEntry{
+		TypeInfo: firstMember.TypeInfo,
+		name:     firstMember.Name(),
+	})
+
+	// Add the other members
+	for _, member := range others {
+		info.childTypes = append(info.childTypes, member.TypeInfo)
+		info.structEntries = append(info.structEntries, &structEntry{
+			TypeInfo: member.TypeInfo,
+			name:     member.Name(),
+		})
+	}
+
+	return info, nil
+}
+
 func (info *typeInfo) logicalType() mapping.LogicalType {
 	switch info.Type {
 	case TYPE_BOOLEAN, TYPE_TINYINT, TYPE_SMALLINT, TYPE_INTEGER, TYPE_BIGINT, TYPE_UTINYINT, TYPE_USMALLINT,
@@ -269,8 +340,22 @@ func (info *typeInfo) logicalType() mapping.LogicalType {
 		return info.logicalMapType()
 	case TYPE_ARRAY:
 		return info.logicalArrayType()
+	case TYPE_UNION:
+		return info.logicalUnionType()
 	}
 	return mapping.LogicalType{}
+}
+
+func (info *typeInfo) logicalUnionType() mapping.LogicalType {
+	var types []mapping.LogicalType
+	defer destroyLogicalTypes(&types)
+
+	var names []string
+	for _, entry := range info.structEntries {
+		types = append(types, entry.Info().logicalType())
+		names = append(names, entry.Name())
+	}
+	return mapping.CreateUnionType(types, names)
 }
 
 func (info *typeInfo) logicalListType() mapping.LogicalType {

@@ -56,6 +56,8 @@ type testTypesRow struct {
 	Array_col        Composite[[3]int32]
 	Time_tz_col      time.Time
 	Timestamp_tz_col time.Time
+	Union_col        Union[any]
+	Map_union_col    Map
 	Json_col_map     Composite[map[string]any]
 	Json_col_array   Composite[[]any]
 	Json_col_string  string
@@ -92,6 +94,8 @@ const testTypesTableSQL = `CREATE TABLE test (
 	Array_col INTEGER[3],
 	Time_tz_col TIMETZ,
 	Timestamp_tz_col TIMESTAMPTZ,
+	Union_col UNION(int_val INTEGER, str_val VARCHAR),
+	Map_union_col MAP(INTEGER, UNION(int_val INTEGER, str_val VARCHAR)),
 	Json_col_map JSON,
 	Json_col_array JSON,
 	Json_col_string JSON,
@@ -140,6 +144,20 @@ func testTypesGenerateRow[T require.TestingT](t T, i int) testTypesRow {
 	arrayCol := Composite[[3]int32]{
 		[3]int32{int32(i), int32(i), int32(i)},
 	}
+
+	// Create a Union value - use int or string based on i
+	var unionValue Union[any]
+	if i%2 == 0 {
+		unionValue = Union[any]{MemberName: "int_val", MemberValue: int32(i)}
+	} else {
+		unionValue = Union[any]{MemberName: "str_val", MemberValue: "value_" + strconv.Itoa(i)}
+	}
+
+	// Create a Map with Unions as values
+	mapUnionCol := Map{
+		int32(i): unionValue,
+	}
+
 	jsonMapCol := Composite[map[string]any]{
 		map[string]any{
 			"hello": float64(42),
@@ -179,6 +197,8 @@ func testTypesGenerateRow[T require.TestingT](t T, i int) testTypesRow {
 		arrayCol,
 		timeTZ,
 		ts,
+		unionValue,  // Union_col
+		mapUnionCol, // Map_union_col
 		jsonMapCol,
 		jsonArrayCol,
 		varcharCol,
@@ -234,6 +254,8 @@ func testTypes[T require.TestingT](t T, db *sql.DB, a *Appender, expectedRows []
 			r.Array_col.Get(),
 			r.Time_tz_col,
 			r.Timestamp_tz_col,
+			r.Union_col,
+			r.Map_union_col,
 			r.Json_col_map.Get(),
 			r.Json_col_array.Get(),
 			r.Json_col_string,
@@ -280,6 +302,8 @@ func testTypes[T require.TestingT](t T, db *sql.DB, a *Appender, expectedRows []
 			&r.Array_col,
 			&r.Time_tz_col,
 			&r.Timestamp_tz_col,
+			&r.Union_col,
+			&r.Map_union_col,
 			&r.Json_col_map,
 			&r.Json_col_array,
 			&r.Json_col_string,
@@ -964,4 +988,137 @@ func TestJSONColType(t *testing.T) {
 	require.Equal(t, typeToStringMap[TYPE_BIGINT], columnTypes[1].DatabaseTypeName())
 	require.Equal(t, reflect.TypeOf((*any)(nil)).Elem(), columnTypes[0].ScanType())
 	require.Equal(t, reflect.TypeOf(int64(0)), columnTypes[1].ScanType())
+}
+
+func TestUnion(t *testing.T) {
+	db := openDbWrapper(t, ``)
+	defer closeDbWrapper(t, db)
+
+	// Create a table with union columns
+	_, err := db.Exec(`
+		CREATE TABLE union_test (
+			id INTEGER,
+			simple_union UNION(int_val INTEGER, str_val VARCHAR, bool_val BOOLEAN),
+			nested_map MAP(VARCHAR, UNION(int_val INTEGER, list_val INTEGER[]))
+		)
+	`)
+	require.NoError(t, err)
+
+	// Insert values using union_value function
+	_, err = db.Exec(`
+		INSERT INTO union_test VALUES 
+			(1, union_value(int_val := 42), MAP {'key1': union_value(int_val := 100)}),
+			(2, union_value(str_val := 'hello'), MAP {'key2': union_value(list_val := [1, 2, 3])}),
+			(3, union_value(bool_val := true), MAP {'key3': union_value(int_val := 999)})
+	`)
+	require.NoError(t, err)
+
+	// Test scanning union values
+	rows, err := db.Query(`SELECT id, simple_union FROM union_test ORDER BY id`)
+	require.NoError(t, err)
+	defer closeRowsWrapper(t, rows)
+
+	expectedValues := []struct {
+		id    int
+		union Union[any]
+	}{
+		{1, Union[any]{MemberName: "int_val", MemberValue: int32(42)}},
+		{2, Union[any]{MemberName: "str_val", MemberValue: "hello"}},
+		{3, Union[any]{MemberName: "bool_val", MemberValue: true}},
+	}
+
+	idx := 0
+	for rows.Next() {
+		var id int
+		var u Union[any]
+		err = rows.Scan(&id, &u)
+		require.NoError(t, err)
+
+		expected := expectedValues[idx]
+		require.Equal(t, expected.id, id)
+		require.Equal(t, expected.union.MemberName, u.MemberName)
+		require.Equal(t, expected.union.MemberValue, u.MemberValue)
+		idx++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, len(expectedValues), idx)
+
+	// Test binding union values
+	for _, testCase := range expectedValues {
+		_, err := db.Exec(`INSERT INTO union_test(id, simple_union) VALUES(?, ?)`, testCase.id+10, testCase.union)
+		require.NoError(t, err)
+
+		var retrievedUnion Union[any]
+		err = db.QueryRow(`SELECT simple_union FROM union_test WHERE id = ?`, testCase.id+10).Scan(&retrievedUnion)
+		require.NoError(t, err)
+		require.Equal(t, testCase.union.MemberName, retrievedUnion.MemberName)
+		require.Equal(t, testCase.union.MemberValue, retrievedUnion.MemberValue)
+	}
+
+	// Test nested union in map
+	rows, err = db.Query(`SELECT id, nested_map FROM union_test WHERE id <= 3 ORDER BY id`)
+	require.NoError(t, err)
+	defer closeRowsWrapper(t, rows)
+
+	expectedMapValues := []struct {
+		id      int
+		key     string
+		tagName string
+	}{
+		{1, "key1", "int_val"},
+		{2, "key2", "list_val"},
+		{3, "key3", "int_val"},
+	}
+
+	idx = 0
+	for rows.Next() {
+		var id int
+		var nestedMap Map
+		err = rows.Scan(&id, &nestedMap)
+		require.NoError(t, err)
+
+		expected := expectedMapValues[idx]
+		require.Equal(t, expected.id, id)
+
+		// Verify only one key in the map
+		require.Equal(t, 1, len(nestedMap))
+
+		// Get the key and value
+		var foundKey string
+		var foundValue Union[any]
+		for k, v := range nestedMap {
+			foundKey = k.(string)
+			foundValue = v.(Union[any])
+			break
+		}
+
+		require.Equal(t, expected.key, foundKey)
+		require.Equal(t, expected.tagName, foundValue.MemberName)
+
+		idx++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, len(expectedMapValues), idx)
+
+	// Test extracting union members directly
+	var intValue int32
+	err = db.QueryRow(`SELECT simple_union.int_val FROM union_test WHERE id = 1`).Scan(&intValue)
+	require.NoError(t, err)
+	require.Equal(t, int32(42), intValue)
+
+	var strValue string
+	err = db.QueryRow(`SELECT simple_union.str_val FROM union_test WHERE id = 2`).Scan(&strValue)
+	require.NoError(t, err)
+	require.Equal(t, "hello", strValue)
+
+	// Test using union_tag and union_extract functions
+	var tagName string
+	err = db.QueryRow(`SELECT union_tag(simple_union) FROM union_test WHERE id = 3`).Scan(&tagName)
+	require.NoError(t, err)
+	require.Equal(t, "bool_val", tagName)
+
+	var boolValue bool
+	err = db.QueryRow(`SELECT union_extract(simple_union, 'bool_val') FROM union_test WHERE id = 3`).Scan(&boolValue)
+	require.NoError(t, err)
+	require.True(t, boolValue)
 }

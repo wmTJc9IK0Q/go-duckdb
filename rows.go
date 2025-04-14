@@ -137,6 +137,8 @@ func (r *rows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf([]any{})
 	case TYPE_STRUCT:
 		return reflect.TypeOf(map[string]any{})
+	case TYPE_UNION:
+		return reflect.TypeOf(Union[any]{})
 	case TYPE_MAP:
 		return reflect.TypeOf(Map{})
 	case TYPE_ARRAY:
@@ -161,7 +163,7 @@ func (r *rows) ColumnTypeDatabaseTypeName(index int) string {
 
 	t := Type(mapping.ColumnType(&r.res, mapping.IdxT(index)))
 	switch t {
-	case TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY:
+	case TYPE_DECIMAL, TYPE_ENUM, TYPE_LIST, TYPE_STRUCT, TYPE_MAP, TYPE_ARRAY, TYPE_UNION:
 		return logicalTypeName(logicalType)
 	default:
 		return typeToStringMap[t]
@@ -200,6 +202,8 @@ func logicalTypeName(logicalType mapping.LogicalType) string {
 		return logicalTypeNameStruct(logicalType)
 	case TYPE_MAP:
 		return logicalTypeNameMap(logicalType)
+	case TYPE_UNION:
+		return logicalTypeNameUnion(logicalType)
 	case TYPE_ARRAY:
 		return logicalTypeNameArray(logicalType)
 	default:
@@ -227,6 +231,25 @@ func logicalTypeNameStruct(logicalType mapping.LogicalType) string {
 	for i := mapping.IdxT(0); i < count; i++ {
 		childName := mapping.StructTypeChildName(logicalType, i)
 		childType := mapping.StructTypeChildType(logicalType, i)
+
+		// Add comma if not at the end of the list.
+		name += escapeStructFieldName(childName) + " " + logicalTypeName(childType)
+		if i != count-1 {
+			name += ", "
+		}
+		mapping.DestroyLogicalType(&childType)
+	}
+
+	return name + ")"
+}
+
+func logicalTypeNameUnion(logicalType mapping.LogicalType) string {
+	count := mapping.UnionTypeMemberCount(logicalType)
+	name := "UNION("
+
+	for i := mapping.IdxT(0); i < count; i++ {
+		childName := mapping.UnionTypeMemberName(logicalType, i)
+		childType := mapping.UnionTypeMemberType(logicalType, i)
 
 		// Add comma if not at the end of the list.
 		name += escapeStructFieldName(childName) + " " + logicalTypeName(childType)

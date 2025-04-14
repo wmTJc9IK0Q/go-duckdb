@@ -869,6 +869,158 @@ func TestAppenderWithJSON(t *testing.T) {
 	require.Equal(t, len(jsonInputs), i)
 }
 
+func TestAppenderUnion(t *testing.T) {
+	c, db, conn, a := prepareAppender(t, `
+		CREATE TABLE test (
+			id INTEGER,
+			union_col UNION(int_val INTEGER, str_val VARCHAR, bool_val BOOLEAN)
+		)`)
+	defer cleanupAppender(t, c, db, conn, a)
+
+	// Create union values with different tag types
+	intUnion := Union[any]{MemberName: "int_val", MemberValue: int32(42)}
+	strUnion := Union[any]{MemberName: "str_val", MemberValue: "hello world"}
+	boolUnion := Union[any]{MemberName: "bool_val", MemberValue: true}
+
+	// Append rows
+	require.NoError(t, a.AppendRow(1, intUnion))
+	require.NoError(t, a.AppendRow(2, strUnion))
+	require.NoError(t, a.AppendRow(3, boolUnion))
+	require.NoError(t, a.AppendRow(4, nil)) // Test NULL union
+	require.NoError(t, a.Flush())
+
+	// Verify results
+	rows, err := db.QueryContext(context.Background(), `SELECT id, union_col FROM test ORDER BY id`)
+	require.NoError(t, err)
+	defer closeRowsWrapper(t, rows)
+
+	// Expected values
+	expectedValues := []struct {
+		id         int
+		unionValue Union[any]
+		isNull     bool
+	}{
+		{1, intUnion, false},
+		{2, strUnion, false},
+		{3, boolUnion, false},
+		{4, Union[any]{}, true},
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var unionVal Union[any]
+		fmt.Printf("iter %v\n", i)
+		require.NoError(t, rows.Scan(&id, &unionVal))
+
+		expected := expectedValues[i]
+		require.Equal(t, expected.id, id)
+
+		if expected.isNull {
+			// For NULL unions, Scan() sets empty values
+			require.Empty(t, unionVal.MemberName)
+			require.Nil(t, unionVal.MemberValue)
+		} else {
+			require.Equal(t, expected.unionValue.MemberName, unionVal.MemberName)
+			require.Equal(t, expected.unionValue.MemberValue, unionVal.MemberValue)
+		}
+		i++
+	}
+	require.Equal(t, len(expectedValues), i)
+
+	// Test extracting union members directly
+	var intValue int32
+	err = db.QueryRow(`SELECT union_col.int_val FROM test WHERE id = 1`).Scan(&intValue)
+	require.NoError(t, err)
+	require.Equal(t, int32(42), intValue)
+
+	var strValue string
+	err = db.QueryRow(`SELECT union_col.str_val FROM test WHERE id = 2`).Scan(&strValue)
+	require.NoError(t, err)
+	require.Equal(t, "hello world", strValue)
+
+	var boolValue bool
+	err = db.QueryRow(`SELECT union_col.bool_val FROM test WHERE id = 3`).Scan(&boolValue)
+	require.NoError(t, err)
+	require.True(t, boolValue)
+}
+
+func TestAppenderMapWithUnion(t *testing.T) {
+	c, db, conn, a := prepareAppender(t, `
+		CREATE TABLE test (
+			id INTEGER,
+			map_union_col MAP(VARCHAR, UNION(int_val INTEGER, str_val VARCHAR))
+		)`)
+	defer cleanupAppender(t, c, db, conn, a)
+
+	// Create union values
+	intUnion := Union[any]{MemberName: "int_val", MemberValue: int32(42)}
+	strUnion := Union[any]{MemberName: "str_val", MemberValue: "hello world"}
+
+	// Create maps with union values
+	map1 := Map{"key1": intUnion, "key2": strUnion}
+	map2 := Map{"only_int": intUnion}
+	map3 := Map{"only_str": strUnion}
+
+	// Append rows
+	require.NoError(t, a.AppendRow(1, map1))
+	require.NoError(t, a.AppendRow(2, map2))
+	require.NoError(t, a.AppendRow(3, map3))
+	require.NoError(t, a.Flush())
+
+	// Verify results
+	rows, err := db.QueryContext(context.Background(), `SELECT id, map_union_col FROM test ORDER BY id`)
+	require.NoError(t, err)
+	defer closeRowsWrapper(t, rows)
+
+	// Expected values
+	expectedValues := []struct {
+		id     int
+		mapVal Map
+	}{
+		{1, map1},
+		{2, map2},
+		{3, map3},
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var mapVal Map
+		require.NoError(t, rows.Scan(&id, &mapVal))
+
+		expected := expectedValues[i]
+		require.Equal(t, expected.id, id)
+
+		require.Equal(t, len(expected.mapVal), len(mapVal))
+
+		// Check each key and union value
+		for k, expectedV := range expected.mapVal {
+			actualV, exists := mapVal[k]
+			require.True(t, exists)
+
+			expectedUnion := expectedV.(Union[any])
+			actualUnion := actualV.(Union[any])
+
+			require.Equal(t, expectedUnion.MemberName, actualUnion.MemberName)
+			require.Equal(t, expectedUnion.MemberValue, actualUnion.MemberValue)
+		}
+		i++
+	}
+	require.Equal(t, len(expectedValues), i)
+
+	// Test accessing map values and union members directly
+	var intValue int32
+	err = db.QueryRow(`SELECT map_union_col['key1'].int_val FROM test WHERE id = 1`).Scan(&intValue)
+	require.NoError(t, err)
+	require.Equal(t, int32(42), intValue)
+
+	var strValue string
+	err = db.QueryRow(`SELECT map_union_col['key2'].str_val FROM test WHERE id = 1`).Scan(&strValue)
+	require.NoError(t, err)
+	require.Equal(t, "hello world", strValue)
+}
+
 func BenchmarkAppenderNested(b *testing.B) {
 	c, db, conn, a := prepareAppender(b, createNestedDataTableSQL)
 	defer cleanupAppender(b, c, db, conn, a)

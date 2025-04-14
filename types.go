@@ -3,6 +3,7 @@ package duckdb
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -110,6 +111,29 @@ func (m *Map) Scan(v any) error {
 
 	*m = data
 	return nil
+}
+
+// Union represents a DuckDB UNION type with a tag and value.
+type Union[T any] struct {
+	MemberName  string `json:"tag"`   // The active tag name
+	MemberValue T      `json:"value"` // The value of the active member
+}
+
+// Marshal only the value by default
+func (u Union[T]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(u.MemberValue)
+}
+
+func (u *Union[T]) Scan(v any) error {
+	switch data := v.(type) {
+	case Union[T]:
+		*u = data
+		return nil
+	case nil:
+		return nil
+	default:
+		return fmt.Errorf("invalid type `%T` for scanning `Union`, expected `Union`", data)
+	}
 }
 
 func mapKeysField() string {
