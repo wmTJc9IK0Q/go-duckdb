@@ -910,7 +910,6 @@ func TestAppenderUnion(t *testing.T) {
 	for rows.Next() {
 		var id int
 		var unionVal Union[any]
-		fmt.Printf("iter %v\n", i)
 		require.NoError(t, rows.Scan(&id, &unionVal))
 
 		expected := expectedValues[i]

@@ -148,7 +148,7 @@ func testTypesGenerateRow[T require.TestingT](t T, i int) testTypesRow {
 	// Create a Union value - use int or string based on i
 	var unionValue Union[any]
 	if i%2 == 0 {
-		unionValue = Union[any]{MemberName: "int_val", MemberValue: int32(i)}
+		unionValue = Union[any]{MemberName: "int_val", MemberValue: int32(i + 10)}
 	} else {
 		unionValue = Union[any]{MemberName: "str_val", MemberValue: "value_" + strconv.Itoa(i)}
 	}

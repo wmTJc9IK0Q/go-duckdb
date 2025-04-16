@@ -558,10 +558,11 @@ func (vec *vector) initUnion(logicalType mapping.LogicalType, colIdx int) error 
 	// We need child vectors for the tag (index 0) + all member types
 	// So the total is memberCount + 1
 	vec.childVectors = make([]vector, memberCount+1)
+	// there is a childVector for the tag member, but not structEntry
 	vec.structEntries = structEntries
 
 	// When the vectors are initialized by getChildVectors:
-	// childVectors[0] = tag vector (int8)
+	// childVectors[0] = tag vector (uint8)
 	// childVectors[1...n] = member vectors (one per union member)
 
 	// Init the tag childVector
@@ -578,8 +579,7 @@ func (vec *vector) initUnion(logicalType mapping.LogicalType, colIdx int) error 
 		}
 	}
 
-	// Initialize the tag vector (index 0) as an int8 to store the active member index
-	// We don't need to explicitly initialize it because DuckDB handles this internally
+	// Initialize the tag vector (index 0) as an uint8 to store the active member index
 	// The appropriate tag value will be set when we call setUnion
 
 	vec.getFn = func(vec *vector, rowIdx mapping.IdxT) any {

@@ -415,64 +415,48 @@ func setUnion[S any](vec *vector, rowIdx mapping.IdxT, val S) error {
 	var memberName string
 	var memberValue any
 
-	// Handle the Union case separately
 	if unionVal, ok := any(val).(Union[any]); ok {
 		memberName = unionVal.MemberName
 		memberValue = unionVal.MemberValue
 	} else {
-		// Fall back to the map case for backward compatibility
-		var union map[string]any
-		switch v := any(val).(type) {
-		case map[string]any:
-			union = v
-		default:
-			return castError(reflect.TypeOf(val).String(), "Union or map[string]any")
-		}
-
-		// There should only be a single key in the map
-		var keys []string
-		for key := range union {
-			keys = append(keys, key)
-		}
-
-		if len(keys) != 1 {
-			return fmt.Errorf("exactly one tag should be set in a union, got: %v", keys)
-		}
-
-		memberName = keys[0]
-		memberValue = union[memberName]
+		return castError(reflect.TypeOf(val).String(), "Union")
 	}
 
 	// Find the tag index in the union's member list
-	tagIdx := -1
+	found := false
+	memberEnumIdx := uint8(0)
 	for i, entry := range vec.structEntries {
 		if entry.Name() == memberName {
-			tagIdx = i
+			found = true
+			memberEnumIdx = uint8(i)
 			break
 		}
 	}
 
-	if tagIdx == -1 {
+	if !found {
 		return fmt.Errorf("invalid union tag: %s", memberName)
 	}
 
-	// For Union types, the tag is stored as the first entry (index 0)
-	// We need to set the tag in the first child vector (which is a primitive int8 vector)
-	tagVec := mapping.StructVectorGetChild(vec.vec, 0)
-	tagData := (*[1 << 31]int8)(mapping.VectorGetData(tagVec))
-	tagData[rowIdx] = int8(tagIdx)
-
-	// If the value is nil, set the child vector to null as well
-	childVecIdx := tagIdx + 1
-	if memberValue == nil {
-		vec.childVectors[childVecIdx].setNull(rowIdx)
-		return nil
+	childVecIdx := memberEnumIdx + 1
+	for i := uint8(0); i < uint8(len(vec.childVectors)); i++ {
+		child := &vec.childVectors[i]
+		if i == 0 {
+			// For Union types, the tag is stored as the first entry (index 0)
+			// We need to set the tag in the first child vector (which is a primitive int8 vector)
+			child.setFn(child, rowIdx, memberEnumIdx)
+		} else if i == childVecIdx {
+			if memberValue == nil {
+				child.setNull(rowIdx)
+			} else if err := child.setFn(child, rowIdx, memberValue); err != nil {
+				return err
+			}
+		} else {
+			// Set all other members to null
+			child.setNull(rowIdx)
+		}
 	}
 
-	// Set the value in the appropriate child vector
-	// The child vectors start at index 1 (one vector per union member)
-	// Child at index (tagIdx+1) holds the value for the active alternative
-	return vec.childVectors[childVecIdx].setFn(&vec.childVectors[childVecIdx], rowIdx, memberValue)
+	return nil
 }
 
 func setVectorVal[S any](vec *vector, rowIdx mapping.IdxT, val S) error {
